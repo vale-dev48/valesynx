@@ -1,0 +1,79 @@
+openapi: 3.1.0
+info:
+  title: ValeSync API
+  version: 0.1.0
+  description: Safe file-creation bridge for a local ValeSync Agent.
+servers:
+  - url: https://YOUR-RAILWAY-DOMAIN
+paths:
+  /api/tasks:
+    post:
+      operationId: createFileTask
+      summary: Queue creation of one file in the local ValeSync workspace
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateFileTask'
+      responses:
+        '200':
+          description: Task queued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  task_id:
+                    type: string
+                  status:
+                    type: string
+        '401':
+          description: Unauthorized
+  /api/tasks/{task_id}:
+    get:
+      operationId: getTask
+      summary: Get the status of a queued file task
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Task status
+        '404':
+          description: Task not found
+  /health:
+    get:
+      operationId: health
+      summary: Health check
+      responses:
+        '200':
+          description: Healthy
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  schemas:
+    CreateFileTask:
+      type: object
+      required: [action, path, content]
+      properties:
+        action:
+          type: string
+          enum: [create_file]
+        path:
+          type: string
+          minLength: 1
+          maxLength: 400
+          description: Relative path inside the agent's ValeWorkspace.
+        content:
+          type: string
+          maxLength: 2000000
