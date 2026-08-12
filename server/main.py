@@ -1,6 +1,8 @@
+import json
 import os
-import sqlite3
 import secrets
+import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Literal
 
@@ -9,44 +11,22 @@ from pydantic import BaseModel, Field, field_validator
 
 
 APP_NAME = "ValeSync"
-DB_PATH = Path(os.getenv("DB_PATH", "./data/valesync.db"))
-API_TOKEN = os.getenv("VALESYNC_API_TOKEN", "")
+APP_VERSION = "0.4.0"
+
+DB_PATH = Path(
+    os.getenv("DB_PATH", "./data/valesync.db")
+)
+
+API_TOKEN = os.getenv(
+    "VALESYNC_API_TOKEN",
+    "",
+)
 
 app = FastAPI(
     title=APP_NAME,
-    version="0.2.0",
+    version=APP_VERSION,
     description="ValeSync server and local-agent task bridge.",
 )
-
-
-# ============================================================
-# MODELS
-# ============================================================
-
-class CreateFileTask(BaseModel):
-    action: Literal["create_file"]
-    path: str = Field(min_length=1, max_length=400)
-    content: str = Field(max_length=2_000_000)
-
-    @field_validator("path")
-    @classmethod
-    def validate_path(cls, value: str) -> str:
-        return validate_relative_path(value)
-
-
-class CreateFileRequest(BaseModel):
-    path: str = Field(min_length=1, max_length=400)
-    content: str = Field(max_length=2_000_000)
-
-    @field_validator("path")
-    @classmethod
-    def validate_path(cls, value: str) -> str:
-        return validate_relative_path(value)
-
-
-class TaskResult(BaseModel):
-    status: Literal["completed", "failed"]
-    message: str = Field(min_length=1, max_length=4000)
 
 
 # ============================================================
@@ -57,7 +37,13 @@ def validate_relative_path(value: str) -> str:
     if "\x00" in value:
         raise ValueError("NUL byte is not allowed")
 
-    normalized = value.replace("\\", "/")
+    normalized = value.replace("\\", "/").strip()
+
+    if not normalized:
+        raise ValueError("Path cannot be empty")
+
+    if normalized == ".":
+        return "."
 
     if normalized.startswith("/"):
         raise ValueError("Absolute paths are not allowed")
@@ -71,41 +57,197 @@ def validate_relative_path(value: str) -> str:
         if part not in ("", ".")
     ]
 
-    if any(part == ".." for part in parts):
-        raise ValueError("Path traversal is not allowed")
-
     if not parts:
         raise ValueError("Path cannot be empty")
 
+    if any(part == ".." for part in parts):
+        raise ValueError("Path traversal is not allowed")
+
     return "/".join(parts)
+
+
+# ============================================================
+# MODELS
+# ============================================================
+
+Action = Literal[
+    "create_file",
+    "update_file",
+    "create_folder",
+    "delete",
+    "move",
+    "list_files",
+    "read_file",
+]
+
+
+class TaskCreate(BaseModel):
+    action: Action
+
+    path: str = Field(
+        min_length=1,
+        max_length=400,
+    )
+
+    content: str | None = Field(
+        default=None,
+        max_length=2_000_000,
+    )
+
+    destination: str | None = Field(
+        default=None,
+        max_length=400,
+    )
+
+    @field_validator("path")
+    @classmethod
+    def validate_path(cls, value: str) -> str:
+        return validate_relative_path(value)
+
+    @field_validator("destination")
+    @classmethod
+    def validate_destination(
+        cls,
+        value: str | None,
+    ) -> str | None:
+        if value is None:
+            return None
+
+        return validate_relative_path(value)
+
+
+class CreateFileRequest(BaseModel):
+    path: str = Field(
+        min_length=1,
+        max_length=400,
+    )
+
+    content: str = Field(
+        max_length=2_000_000,
+    )
+
+    @field_validator("path")
+    @classmethod
+    def validate_path(cls, value: str) -> str:
+        return validate_relative_path(value)
+
+
+class UpdateFileRequest(BaseModel):
+    path: str = Field(
+        min_length=1,
+        max_length=400,
+    )
+
+    content: str = Field(
+        max_length=2_000_000,
+    )
+
+    @field_validator("path")
+    @classmethod
+    def validate_path(cls, value: str) -> str:
+        return validate_relative_path(value)
+
+
+class CreateFolderRequest(BaseModel):
+    path: str = Field(
+        min_length=1,
+        max_length=400,
+    )
+
+    @field_validator("path")
+    @classmethod
+    def validate_path(cls, value: str) -> str:
+        return validate_relative_path(value)
+
+
+class DeleteRequest(BaseModel):
+    path: str = Field(
+        min_length=1,
+        max_length=400,
+    )
+
+    @field_validator("path")
+    @classmethod
+    def validate_path(cls, value: str) -> str:
+        return validate_relative_path(value)
+
+
+class MoveRequest(BaseModel):
+    path: str = Field(
+        min_length=1,
+        max_length=400,
+    )
+
+    destination: str = Field(
+        min_length=1,
+        max_length=400,
+    )
+
+    @field_validator("path")
+    @classmethod
+    def validate_path(cls, value: str) -> str:
+        return validate_relative_path(value)
+
+    @field_validator("destination")
+    @classmethod
+    def validate_destination(cls, value: str) -> str:
+        return validate_relative_path(value)
+
+
+class ReadFileRequest(BaseModel):
+    path: str = Field(
+        min_length=1,
+        max_length=400,
+    )
+
+    @field_validator("path")
+    @classmethod
+    def validate_path(cls, value: str) -> str:
+        return validate_relative_path(value)
+
+
+class ListFilesRequest(BaseModel):
+    path: str = Field(
+        default=".",
+        max_length=400,
+    )
+
+    recursive: bool = False
+
+    @field_validator("path")
+    @classmethod
+    def validate_path(cls, value: str) -> str:
+        if value.strip() in ("", "."):
+            return "."
+
+        return validate_relative_path(value)
+
+
+class TaskResult(BaseModel):
+    status: Literal[
+        "completed",
+        "failed",
+    ]
+
+    message: str = Field(
+        min_length=1,
+        max_length=4000,
+    )
+
+    data: dict | list | None = None
 
 
 # ============================================================
 # DATABASE
 # ============================================================
 
-def get_db() -> sqlite3.Connection:
+def init_db() -> None:
     DB_PATH.parent.mkdir(
         parents=True,
         exist_ok=True,
     )
 
-    conn = sqlite3.connect(
-        DB_PATH,
-        timeout=10,
-        isolation_level=None,
-    )
-
-    conn.row_factory = sqlite3.Row
-
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=10000")
-
-    return conn
-
-
-def init_db() -> None:
-    with get_db() as db:
+    with sqlite3.connect(DB_PATH) as db:
         db.execute(
             """
             CREATE TABLE IF NOT EXISTS tasks (
@@ -113,6 +255,7 @@ def init_db() -> None:
                 action TEXT NOT NULL,
                 path TEXT NOT NULL,
                 content TEXT NOT NULL,
+                destination TEXT,
                 status TEXT NOT NULL
                     CHECK(
                         status IN (
@@ -126,10 +269,42 @@ def init_db() -> None:
                     DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT NOT NULL
                     DEFAULT CURRENT_TIMESTAMP,
-                result_message TEXT
+                result_message TEXT,
+                result_data TEXT
             )
             """
         )
+
+        columns = {
+            row[1]
+            for row in db.execute(
+                "PRAGMA table_info(tasks)"
+            ).fetchall()
+        }
+
+        if "destination" not in columns:
+            db.execute(
+                """
+                ALTER TABLE tasks
+                ADD COLUMN destination TEXT
+                """
+            )
+
+        if "result_message" not in columns:
+            db.execute(
+                """
+                ALTER TABLE tasks
+                ADD COLUMN result_message TEXT
+                """
+            )
+
+        if "result_data" not in columns:
+            db.execute(
+                """
+                ALTER TABLE tasks
+                ADD COLUMN result_data TEXT
+                """
+            )
 
         db.execute(
             """
@@ -138,6 +313,38 @@ def init_db() -> None:
             ON tasks(status, created_at)
             """
         )
+
+        db.commit()
+
+
+@contextmanager
+def get_db():
+    DB_PATH.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    db = sqlite3.connect(
+        DB_PATH,
+        timeout=10,
+    )
+
+    db.row_factory = sqlite3.Row
+
+    db.execute(
+        "PRAGMA busy_timeout=10000"
+    )
+
+    try:
+        yield db
+        db.commit()
+
+    except Exception:
+        db.rollback()
+        raise
+
+    finally:
+        db.close()
 
 
 # ============================================================
@@ -166,7 +373,9 @@ def require_token(
             detail="Invalid authorization format",
         )
 
-    supplied = authorization.removeprefix("Bearer ").strip()
+    supplied = authorization.removeprefix(
+        "Bearer "
+    ).strip()
 
     if not secrets.compare_digest(
         supplied,
@@ -196,12 +405,55 @@ def health() -> dict:
     return {
         "ok": True,
         "service": APP_NAME,
-        "version": "0.2.0",
+        "version": APP_VERSION,
     }
 
 
 # ============================================================
-# SIMPLE CREATE-FILE ENDPOINT
+# INSERT TASK
+# ============================================================
+
+def insert_task(
+    action: str,
+    path: str,
+    content: str | None = None,
+    destination: str | None = None,
+) -> dict:
+
+    task_id = secrets.token_urlsafe(18)
+
+    with get_db() as db:
+        db.execute(
+            """
+            INSERT INTO tasks (
+                id,
+                action,
+                path,
+                content,
+                destination,
+                status
+            )
+            VALUES (?, ?, ?, ?, ?, 'pending')
+            """,
+            (
+                task_id,
+                action,
+                path,
+                content or "",
+                destination or "",
+            ),
+        )
+
+    return {
+        "task_id": task_id,
+        "status": "pending",
+        "action": action,
+        "path": path,
+    }
+
+
+# ============================================================
+# CREATE FILE
 # ============================================================
 
 @app.post("/create-file")
@@ -210,87 +462,136 @@ def create_file(
     _: None = Depends(require_token),
 ) -> dict:
 
-    task_id = secrets.token_urlsafe(18)
-
-    with get_db() as db:
-        db.execute(
-            """
-            INSERT INTO tasks (
-                id,
-                action,
-                path,
-                content,
-                status
-            )
-            VALUES (
-                ?,
-                'create_file',
-                ?,
-                ?,
-                'pending'
-            )
-            """,
-            (
-                task_id,
-                request.path,
-                request.content,
-            ),
-        )
-
-    return {
-        "task_id": task_id,
-        "status": "pending",
-        "action": "create_file",
-        "path": request.path,
-    }
+    return insert_task(
+        action="create_file",
+        path=request.path,
+        content=request.content,
+    )
 
 
 # ============================================================
-# ORIGINAL API
+# UPDATE FILE
+# ============================================================
+
+@app.post("/update-file")
+def update_file(
+    request: UpdateFileRequest,
+    _: None = Depends(require_token),
+) -> dict:
+
+    return insert_task(
+        action="update_file",
+        path=request.path,
+        content=request.content,
+    )
+
+
+# ============================================================
+# CREATE FOLDER
+# ============================================================
+
+@app.post("/create-folder")
+def create_folder(
+    request: CreateFolderRequest,
+    _: None = Depends(require_token),
+) -> dict:
+
+    return insert_task(
+        action="create_folder",
+        path=request.path,
+    )
+
+
+# ============================================================
+# DELETE
+# ============================================================
+
+@app.post("/delete")
+def delete(
+    request: DeleteRequest,
+    _: None = Depends(require_token),
+) -> dict:
+
+    return insert_task(
+        action="delete",
+        path=request.path,
+    )
+
+
+# ============================================================
+# MOVE
+# ============================================================
+
+@app.post("/move")
+def move(
+    request: MoveRequest,
+    _: None = Depends(require_token),
+) -> dict:
+
+    return insert_task(
+        action="move",
+        path=request.path,
+        destination=request.destination,
+    )
+
+
+# ============================================================
+# READ FILE
+# ============================================================
+
+@app.post("/read-file")
+def read_file(
+    request: ReadFileRequest,
+    _: None = Depends(require_token),
+) -> dict:
+
+    return insert_task(
+        action="read_file",
+        path=request.path,
+    )
+
+
+# ============================================================
+# LIST FILES
+# ============================================================
+
+@app.post("/list-files")
+def list_files(
+    request: ListFilesRequest,
+    _: None = Depends(require_token),
+) -> dict:
+
+    return insert_task(
+        action="list_files",
+        path=request.path,
+        content=(
+            "recursive"
+            if request.recursive
+            else ""
+        ),
+    )
+
+
+# ============================================================
+# GENERIC TASK API
 # ============================================================
 
 @app.post("/api/tasks")
 def create_task(
-    task: CreateFileTask,
+    task: TaskCreate,
     _: None = Depends(require_token),
 ) -> dict:
 
-    task_id = secrets.token_urlsafe(18)
-
-    with get_db() as db:
-        db.execute(
-            """
-            INSERT INTO tasks (
-                id,
-                action,
-                path,
-                content,
-                status
-            )
-            VALUES (
-                ?,
-                ?,
-                ?,
-                ?,
-                'pending'
-            )
-            """,
-            (
-                task_id,
-                task.action,
-                task.path,
-                task.content,
-            ),
-        )
-
-    return {
-        "task_id": task_id,
-        "status": "pending",
-    }
+    return insert_task(
+        action=task.action,
+        path=task.path,
+        content=task.content,
+        destination=task.destination,
+    )
 
 
 # ============================================================
-# AGENT: GET NEXT TASK
+# GET NEXT TASK
 # ============================================================
 
 @app.get("/api/tasks/next")
@@ -299,6 +600,7 @@ def get_next_task(
 ) -> dict:
 
     with get_db() as db:
+
         db.execute("BEGIN IMMEDIATE")
 
         row = db.execute(
@@ -307,7 +609,8 @@ def get_next_task(
                 id,
                 action,
                 path,
-                content
+                content,
+                destination
             FROM tasks
             WHERE status = 'pending'
             ORDER BY created_at, rowid
@@ -317,11 +620,12 @@ def get_next_task(
 
         if row is None:
             db.execute("COMMIT")
+
             return {
-                "task": None,
+                "task": None
             }
 
-        db.execute(
+        updated = db.execute(
             """
             UPDATE tasks
             SET
@@ -333,20 +637,28 @@ def get_next_task(
             (row["id"],),
         )
 
+        if updated.rowcount != 1:
+            db.execute("ROLLBACK")
+
+            return {
+                "task": None
+            }
+
         db.execute("COMMIT")
 
-    return {
-        "task": {
-            "id": row["id"],
-            "action": row["action"],
-            "path": row["path"],
-            "content": row["content"],
+        return {
+            "task": {
+                "id": row["id"],
+                "action": row["action"],
+                "path": row["path"],
+                "content": row["content"],
+                "destination": row["destination"],
+            }
         }
-    }
 
 
 # ============================================================
-# AGENT: REPORT RESULT
+# REPORT RESULT
 # ============================================================
 
 @app.post("/api/tasks/{task_id}/result")
@@ -356,13 +668,24 @@ def report_result(
     _: None = Depends(require_token),
 ) -> dict:
 
+    result_data = (
+        json.dumps(
+            result.data,
+            ensure_ascii=False,
+        )
+        if result.data is not None
+        else None
+    )
+
     with get_db() as db:
+
         cur = db.execute(
             """
             UPDATE tasks
             SET
                 status = ?,
                 result_message = ?,
+                result_data = ?,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
               AND status = 'processing'
@@ -370,6 +693,7 @@ def report_result(
             (
                 result.status,
                 result.message,
+                result_data,
                 task_id,
             ),
         )
@@ -397,16 +721,19 @@ def get_task(
 ) -> dict:
 
     with get_db() as db:
+
         row = db.execute(
             """
             SELECT
                 id,
                 action,
                 path,
+                destination,
                 status,
                 created_at,
                 updated_at,
-                result_message
+                result_message,
+                result_data
             FROM tasks
             WHERE id = ?
             """,
@@ -419,4 +746,14 @@ def get_task(
             detail="Task not found",
         )
 
-    return dict(row)
+    result = dict(row)
+
+    if result.get("result_data"):
+        try:
+            result["result_data"] = json.loads(
+                result["result_data"]
+            )
+        except json.JSONDecodeError:
+            pass
+
+    return result
