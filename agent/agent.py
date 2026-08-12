@@ -5,7 +5,10 @@ from pathlib import Path
 
 import requests
 
-SERVER_URL = os.getenv("VALESYNC_SERVER_URL", "http://127.0.0.1:8000").rstrip("/")
+SERVER_URL = os.getenv(
+    "VALESYNC_SERVER_URL",
+    "http://127.0.0.1:8000"
+).rstrip("/")
 TOKEN = os.getenv("VALESYNC_API_TOKEN", "")
 WORKSPACE = Path(os.getenv("VALESYNC_WORKSPACE", Path.home() / "ValeWorkspace")).expanduser().resolve()
 POLL_SECONDS = max(1.0, float(os.getenv("VALESYNC_POLL_SECONDS", "3")))
